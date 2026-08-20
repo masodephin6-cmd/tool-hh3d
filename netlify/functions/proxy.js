@@ -1,53 +1,34 @@
 const { HttpsProxyAgent } = require('https-proxy-agent');
-const fetch = require('node-fetch'); // Dùng node-fetch để tương thích tốt với Agent
+const fetch = require('node-fetch');
 
 exports.handler = async function(event, context) {
-    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Chỉ nhận POST" };
+    if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
+
+    const { targetUrl, method, headers, payload, proxyConfig } = JSON.parse(event.body);
+
+    // Bắt buộc phải có User-Agent của Chrome thật
+    const customHeaders = {
+        ...headers,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://hoathinh3d.so/",
+    };
+
+    const options = { method, headers: customHeaders };
+    if (payload && method === "POST") options.body = JSON.stringify(payload);
+
+    // Cấu hình Proxy
+    if (proxyConfig) {
+        const p = proxyConfig.split(':');
+        const proxyUrl = p.length === 4 ? `http://${p[2]}:${p[3]}@${p[0]}:${p[1]}` : `http://${p[0]}:${p[1]}`;
+        options.agent = new HttpsProxyAgent(proxyUrl);
+    }
 
     try {
-        const { targetUrl, method, headers, payload, proxyConfig } = JSON.parse(event.body);
-
-        const fetchOptions = {
-            method: method || "GET",
-            headers: headers || {}
-        };
-        
-        if (payload && method === "POST") {
-            fetchOptions.body = JSON.stringify(payload);
-        }
-
-        // --- XỬ LÝ PROXY NẾU CÓ ---
-        if (proxyConfig && proxyConfig.trim() !== '') {
-            // Cắt chuỗi theo định dạng ip:port:user:pass
-            const parts = proxyConfig.trim().split(':');
-            if (parts.length === 4) {
-                const [host, port, user, pass] = parts;
-                // Tạo URL proxy có chứa xác thực
-                const proxyUrl = `http://${user}:${pass}@${host}:${port}`;
-                // Gắn Agent vào Fetch
-                fetchOptions.agent = new HttpsProxyAgent(proxyUrl);
-            } else if (parts.length === 2) {
-                 // Dành cho proxy không có pass: ip:port
-                 const [host, port] = parts;
-                 const proxyUrl = `http://${host}:${port}`;
-                 fetchOptions.agent = new HttpsProxyAgent(proxyUrl);
-            }
-        }
-        // -------------------------
-
-        // Gửi Request đi
-        const response = await fetch(targetUrl, fetchOptions);
-        const textData = await response.text();
-
-        return {
-            statusCode: 200,
-            body: JSON.stringify({ success: true, text: textData })
-        };
-
-    } catch (error) {
-        return {
-            statusCode: 500,
-            body: JSON.stringify({ success: false, error: error.message })
-        };
+        const response = await fetch(targetUrl, options);
+        const text = await response.text();
+        return { statusCode: 200, body: JSON.stringify({ success: true, text }) };
+    } catch (e) {
+        return { statusCode: 500, body: JSON.stringify({ success: false, error: e.message }) };
     }
 };
