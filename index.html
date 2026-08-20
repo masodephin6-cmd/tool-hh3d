@@ -73,16 +73,14 @@
         </div>
     </div>
 
-    <script>
+   <script>
         let loops = {};
         let tokens = {};
         const logBox = document.getElementById('logContainer');
 
-        // Hàm ghi log ra giao diện
         function addLog(accName, message, type = 'info') {
             const now = new Date();
-            const timeStr = now.toLocaleTimeString(); // Giờ:Phút:Giây
-            
+            const timeStr = now.toLocaleTimeString(); 
             const logHTML = `
                 <div class="log-entry">
                     <span class="log-time">[${timeStr}]</span>
@@ -90,16 +88,11 @@
                     <span class="log-msg ${type}">${message}</span>
                 </div>
             `;
-            
             logBox.insertAdjacentHTML('beforeend', logHTML);
-            // Tự động cuộn xuống cuối cùng
             logBox.scrollTop = logBox.scrollHeight;
             
-            // Cập nhật dòng trạng thái ngắn trên bảng Account
             const shortStatus = document.getElementById('status_' + accName);
-            if (shortStatus) {
-                shortStatus.innerHTML = `<span class="log-msg ${type}">${message}</span>`;
-            }
+            if (shortStatus) shortStatus.innerHTML = `<span class="log-msg ${type}">${message}</span>`;
         }
 
         function clearLogs() {
@@ -107,7 +100,6 @@
             addLog('Hệ thống', 'Đã xóa lịch sử log.', 'info');
         }
 
-        // Chuyển JSON thành String
         function parseCookie(jsonStr) {
             try {
                 let parsed = JSON.parse(jsonStr);
@@ -116,7 +108,6 @@
             } catch(e) { return null; }
         }
 
-        // Lưu Account
         function saveAccount() {
             const name = document.getElementById('accName').value;
             const domain = document.getElementById('domain').value.replace(/\/$/, "");
@@ -143,7 +134,6 @@
             return await res.json();
         }
 
-        // Vòng lặp chính
         async function runAuto(accName) {
             const accs = JSON.parse(localStorage.getItem('hh3d_accs') || '{}');
             const acc = accs[accName];
@@ -153,89 +143,130 @@
             tokens[accName] = { nonce: "", token: "" };
 
             loops[accName] = setInterval(async () => {
-                const baseHeaders = { "cookie": acc.cookieStr, "user-agent": "Mozilla/5.0" };
+                // ĐẦY ĐỦ HEADERS ĐỂ VƯỢT CLOUDFLARE
+                const baseHeaders = { 
+                    "cookie": acc.cookieStr, 
+                    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "sec-ch-ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua-mobile": "?0",
+                    "sec-ch-ua-platform": "\"Windows\""
+                };
 
                 try {
-                    // 1. Lấy Token nếu chưa có
+                    // 1. Lấy Token
                     if (!tokens[accName].token) {
                         const pageRes = await callProxy(`${acc.domain}/luyen-dan-duong`, "GET", baseHeaders);
-                        tokens[accName].nonce = pageRes.text.match(/"restNonce"\s*:\s*"([^"]+)"/)?.[1];
-                        tokens[accName].token = pageRes.text.match(/"securityToken"\s*:\s*"([^"]+)"/)?.[1];
                         
-                        if(!tokens[accName].token) { 
-                            addLog(accName, "Lỗi: Không lấy được Token (Cookie có thể đã chết)", 'error');
+                        // Kiểm tra nếu Proxy lỗi từ bên trong
+                        if (!pageRes || !pageRes.success) {
+                            addLog(accName, `Lỗi Proxy: ${pageRes?.error || 'Không nhận được dữ liệu'}`, 'error');
+                            stopAuto(accName);
+                            return;
+                        }
+
+                        const htmlText = pageRes.text || "";
+                        
+                        // Bắt lỗi rỗng hoặc bị chặn
+                        if(htmlText.includes("Cloudflare") || htmlText.includes("Checking your browser")) {
+                            addLog(accName, "Lỗi: Bị Cloudflare chặn. Hãy lấy lại Cookie mới (bao gồm cf_clearance)!", 'error');
+                            stopAuto(accName); return;
+                        }
+
+                        const nonceMatch = htmlText.match(/"restNonce"\s*:\s*"([^"]+)"/);
+                        const tokenMatch = htmlText.match(/"securityToken"\s*:\s*"([^"]+)"/);
+
+                        if (nonceMatch && tokenMatch) {
+                            tokens[accName].nonce = nonceMatch[1];
+                            tokens[accName].token = tokenMatch[1];
+                            addLog(accName, "Đã lấy Token thành công, bắt đầu vận công...", 'success');
+                        } else {
+                            addLog(accName, "Lỗi: Không tìm thấy Token. Cookie có thể đã chết hoặc sai định dạng!", 'error');
                             stopAuto(accName); 
-                            return; 
+                            return;
                         }
                     }
 
-                    // 2. Gọi API kiểm tra trạng thái lò
-                    const apiHeaders = { ...baseHeaders, "content-type": "application/json", "x-wp-nonce": tokens[accName].nonce, "x-ld-token": tokens[accName].token };
-                    const stateRes = await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/state`, "GET", apiHeaders);
-                    
-                    if(!stateRes.success) {
-                        addLog(accName, "Lỗi kết nối tới Server HH3D", 'error');
-                        return;
-                    }
+                    // Nếu đã có token thì chạy logic chính
+                    if (tokens[accName].token) {
+                        const apiHeaders = { 
+                            ...baseHeaders, 
+                            "accept": "application/json",
+                            "content-type": "application/json", 
+                            "x-wp-nonce": tokens[accName].nonce, 
+                            "x-ld-token": tokens[accName].token,
+                            "referer": `${acc.domain}/luyen-dan-duong`,
+                            "origin": acc.domain
+                        };
 
-                    const stateData = JSON.parse(stateRes.text).data;
-                    if(!stateData) return;
+                        const stateRes = await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/state`, "GET", apiHeaders);
+                        
+                        if(!stateRes.success) {
+                            addLog(accName, "Lỗi kết nối tới API Luyện Đan", 'error');
+                            return;
+                        }
 
-                    const furnace = stateData.furnace || "idle";
-                    const craftId = stateData.craft?.id;
-                    
-                    // 3. Xử lý Logic Auto
-                    if (furnace === "idle") {
-                        // Bóc túi nếu có
-                        let hasBundle = false;
-                        for (let b of (stateData.mat_bundles || [])) {
-                            if (b.qty > 0) {
-                                hasBundle = true;
-                                addLog(accName, "Đang bóc túi nguyên liệu...", 'warning');
-                                await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/open-mat-bundle`, "POST", apiHeaders, { bundle_key: b.bundle_key });
-                                break; // Bóc 1 cái rồi đợi vòng lặp sau
+                        let stateData;
+                        try {
+                            stateData = JSON.parse(stateRes.text).data;
+                        } catch(e) {
+                            addLog(accName, "Lỗi: Server trả về dữ liệu không phải JSON", 'error');
+                            return;
+                        }
+                        
+                        if(!stateData) return;
+
+                        const furnace = stateData.furnace || "idle";
+                        const craftId = stateData.craft?.id;
+                        
+                        if (furnace === "idle") {
+                            let hasBundle = false;
+                            for (let b of (stateData.mat_bundles || [])) {
+                                if (b.qty > 0) {
+                                    hasBundle = true;
+                                    addLog(accName, "Đang bóc túi nguyên liệu...", 'warning');
+                                    await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/open-mat-bundle`, "POST", apiHeaders, { bundle_key: b.bundle_key });
+                                    break;
+                                }
+                            }
+                            
+                            if (!hasBundle) {
+                                const tier = stateData.tier || "trung";
+                                addLog(accName, `Đang nhét nguyên liệu, đốt lò phẩm [${tier}]...`, 'info');
+                                const startRes = await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/start`, "POST", apiHeaders, { tier });
+                                
+                                const resData = JSON.parse(startRes.text);
+                                if(resData && !resData.ok) {
+                                    addLog(accName, `Lỗi khởi động lò: ${resData.message || 'Thiếu nguyên liệu'}`, 'error');
+                                }
+                            }
+                        } 
+                        else if (furnace === "crafting") {
+                            const stability = parseFloat(stateData.craft?.stability_pct);
+                            const tuneCd = parseInt(stateData.craft?.tune_cooldown_left_sec);
+                            
+                            addLog(accName, `Lò đang cháy... Độ ổn định: ${stability}% | Chờ skill: ${tuneCd}s`, 'info');
+                            
+                            if (stability <= 68 && tuneCd === 0) {
+                                addLog(accName, "🔥 Lửa tụt dưới 68%! Đang bơm Điều Hỏa...", 'warning');
+                                await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/tune`, "POST", apiHeaders);
                             }
                         }
-                        
-                        // Nếu không có túi để bóc thì mới luyện đan
-                        if (!hasBundle) {
-                            const tier = stateData.tier || "trung";
-                            
-                            // (Chỗ này có thể chèn thêm logic check thiếu nguyên liệu nếu muốn chi tiết hơn)
-                            addLog(accName, `Đang nhét nguyên liệu, chuẩn bị đốt lò phẩm [${tier}]...`, 'info');
-                            const startRes = await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/start`, "POST", apiHeaders, { tier });
-                            
-                            // Check nếu lỗi thiếu nguyên liệu
-                            const resData = JSON.parse(startRes.text);
-                            if(resData && !resData.success) {
-                                addLog(accName, `Lỗi khởi động lò: ${resData.message || 'Thiếu nguyên liệu'}`, 'error');
-                            }
+                        else if (furnace === "ready") {
+                            addLog(accName, "🎁 Đan đã chín! Đang thu hoạch...", 'success');
+                            await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/collect`, "POST", apiHeaders, { job_id: craftId });
                         }
-                    } 
-                    else if (furnace === "crafting") {
-                        const stability = parseFloat(stateData.craft?.stability_pct);
-                        const tuneCd = parseInt(stateData.craft?.tune_cooldown_left_sec);
-                        
-                        addLog(accName, `Lò đang cháy... Độ ổn định (Lửa): ${stability}% | Chờ skill: ${tuneCd}s`, 'info');
-                        
-                        if (stability <= 68 && tuneCd === 0) {
-                            addLog(accName, "🔥 Lửa yếu! Đang vận công bơm Điều Hỏa...", 'warning');
-                            await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/tune`, "POST", apiHeaders);
+                        else if (furnace === "exploded") {
+                            addLog(accName, "💥 BÙM! Nổ lò rồi... Đang dọn dẹp.", 'error');
+                            await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/ack-explosion`, "POST", apiHeaders, { job_id: craftId });
                         }
-                    }
-                    else if (furnace === "ready") {
-                        addLog(accName, "🎁 Đan đã chín thơm phức! Đang thu hoạch...", 'success');
-                        await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/collect`, "POST", apiHeaders, { job_id: craftId });
-                    }
-                    else if (furnace === "exploded") {
-                        addLog(accName, "💥 BÙM! Nổ lò rồi... Đang dọn dẹp tàn tích.", 'error');
-                        await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/ack-explosion`, "POST", apiHeaders, { job_id: craftId });
                     }
 
                 } catch (err) {
-                    addLog(accName, `Lỗi mạng tạm thời: ${err.message}`, 'error');
+                    addLog(accName, `Lỗi mạng: ${err.message}`, 'error');
                 }
-            }, 3000); // Vòng lặp 3 giây
+            }, 3000);
             
             renderList();
         }
@@ -244,15 +275,13 @@
             if (loops[accName]) {
                 clearInterval(loops[accName]);
                 delete loops[accName];
-                addLog(accName, 'Đã DỪNG tiến trình.', 'warning');
+                addLog(accName, 'Đã DỪNG.', 'warning');
             }
             renderList();
         }
 
         function startAuto(accName) {
-            if (!loops[accName]) {
-                runAuto(accName);
-            }
+            if (!loops[accName]) runAuto(accName);
         }
 
         function deleteAcc(accName) {
@@ -260,11 +289,10 @@
             let accounts = JSON.parse(localStorage.getItem('hh3d_accs') || '{}');
             delete accounts[accName];
             localStorage.setItem('hh3d_accs', JSON.stringify(accounts));
-            addLog('Hệ thống', `Đã xóa tài khoản: ${accName}`, 'info');
+            addLog('Hệ thống', `Đã xóa: ${accName}`, 'info');
             renderList();
         }
 
-        // Vẽ danh sách acc
         function renderList() {
             const accs = JSON.parse(localStorage.getItem('hh3d_accs') || '{}');
             let html = '';
@@ -285,9 +313,8 @@
             document.getElementById('accList').innerHTML = html;
         }
 
-        // Khởi chạy khi load trang
         renderList();
-        addLog('Hệ thống', 'Giao diện tải thành công. Sẵn sàng hoạt động.', 'success');
+        addLog('Hệ thống', 'Sẵn sàng.', 'success');
     </script>
 </body>
 </html>
