@@ -110,10 +110,14 @@
 
         function saveAccount() {
             const name = document.getElementById('accName').value;
-            const domain = document.getElementById('domain').value.replace(/\/$/, "");
+            let domain = document.getElementById('domain').value.trim();
             const cookieStr = parseCookie(document.getElementById('cookieJson').value);
 
             if(!name || !cookieStr) return alert("Vui lòng nhập Tên và JSON Cookie hợp lệ!");
+
+            if (domain.includes('/luyen-dan-duong')) domain = domain.replace('/luyen-dan-duong', '');
+            domain = domain.replace(/\/$/, "");
+            if (!domain.startsWith('http')) domain = 'https://' + domain;
 
             let accounts = JSON.parse(localStorage.getItem('hh3d_accs') || '{}');
             accounts[name] = { domain, cookieStr };
@@ -125,7 +129,6 @@
             renderList();
         }
 
-        // Gọi API qua Proxy
         async function callProxy(targetUrl, method, headers, payload) {
             const res = await fetch('/.netlify/functions/proxy', {
                 method: 'POST',
@@ -143,52 +146,50 @@
             tokens[accName] = { nonce: "", token: "" };
 
             loops[accName] = setInterval(async () => {
-                // ĐẦY ĐỦ HEADERS ĐỂ VƯỢT CLOUDFLARE
                 const baseHeaders = { 
                     "cookie": acc.cookieStr, 
                     "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                    "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "sec-ch-ua": "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
-                    "sec-ch-ua-mobile": "?0",
-                    "sec-ch-ua-platform": "\"Windows\""
+                    "accept-language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
                 };
 
                 try {
-                    // 1. Lấy Token
+                    // 1. LẤY TOKEN
                     if (!tokens[accName].token) {
                         const pageRes = await callProxy(`${acc.domain}/luyen-dan-duong`, "GET", baseHeaders);
                         
-                        // Kiểm tra nếu Proxy lỗi từ bên trong
                         if (!pageRes || !pageRes.success) {
                             addLog(accName, `Lỗi Proxy: ${pageRes?.error || 'Không nhận được dữ liệu'}`, 'error');
-                            stopAuto(accName);
-                            return;
+                            stopAuto(accName); return;
                         }
 
                         const htmlText = pageRes.text || "";
                         
-                        // Bắt lỗi rỗng hoặc bị chặn
-                        if(htmlText.includes("Cloudflare") || htmlText.includes("Checking your browser")) {
-                            addLog(accName, "Lỗi: Bị Cloudflare chặn. Hãy lấy lại Cookie mới (bao gồm cf_clearance)!", 'error');
-                            stopAuto(accName); return;
-                        }
-
-                        const nonceMatch = htmlText.match(/"restNonce"\s*:\s*"([^"]+)"/);
-                        const tokenMatch = htmlText.match(/"securityToken"\s*:\s*"([^"]+)"/);
+                        // REGEX MẠNH HƠN (Bao cả dấu nháy đơn và kép)
+                        const nonceMatch = htmlText.match(/["']?restNonce["']?\s*[:=]\s*["']([^"']+)["']/i);
+                        const tokenMatch = htmlText.match(/["']?securityToken["']?\s*[:=]\s*["']([^"']+)["']/i) || htmlText.match(/["']?x-ld-token["']?\s*[:=]\s*["']([^"']+)["']/i);
 
                         if (nonceMatch && tokenMatch) {
                             tokens[accName].nonce = nonceMatch[1];
                             tokens[accName].token = tokenMatch[1];
-                            addLog(accName, "Đã lấy Token thành công, bắt đầu vận công...", 'success');
+                            addLog(accName, "Đã lấy Token thành công, bắt đầu kiểm tra lò...", 'success');
                         } else {
-                            addLog(accName, "Lỗi: Không tìm thấy Token. Cookie có thể đã chết hoặc sai định dạng!", 'error');
+                            // TÍNH NĂNG DEBUG: Bắt Tiêu đề trang web để xem có bị Cloudflare chặn không
+                            const titleMatch = htmlText.match(/<title>([^<]+)<\/title>/i);
+                            const pageTitle = titleMatch ? titleMatch[1].trim() : "Không rõ tiêu đề";
+                            
+                            addLog(accName, `Lỗi Token! Trang web trả về tiêu đề: [${pageTitle}]`, 'error');
+                            
+                            if (pageTitle.includes("Just a moment") || htmlText.includes("Cloudflare")) {
+                                addLog(accName, "👉 Web đang bị Cloudflare chặn (Thiếu cookie cf_clearance). Hãy lấy lại cookie!", 'warning');
+                            }
+                            
                             stopAuto(accName); 
                             return;
                         }
                     }
 
-                    // Nếu đã có token thì chạy logic chính
+                    // 2. CHẠY LOGIC LÒ ĐAN
                     if (tokens[accName].token) {
                         const apiHeaders = { 
                             ...baseHeaders, 
@@ -196,24 +197,15 @@
                             "content-type": "application/json", 
                             "x-wp-nonce": tokens[accName].nonce, 
                             "x-ld-token": tokens[accName].token,
-                            "referer": `${acc.domain}/luyen-dan-duong`,
-                            "origin": acc.domain
+                            "referer": `${acc.domain}/luyen-dan-duong`
                         };
 
                         const stateRes = await callProxy(`${acc.domain}/wp-json/hh3d/v1/luyen-dan/state`, "GET", apiHeaders);
-                        
-                        if(!stateRes.success) {
-                            addLog(accName, "Lỗi kết nối tới API Luyện Đan", 'error');
-                            return;
-                        }
+                        if(!stateRes.success) return;
 
                         let stateData;
-                        try {
-                            stateData = JSON.parse(stateRes.text).data;
-                        } catch(e) {
-                            addLog(accName, "Lỗi: Server trả về dữ liệu không phải JSON", 'error');
-                            return;
-                        }
+                        try { stateData = JSON.parse(stateRes.text).data; } 
+                        catch(e) { return; }
                         
                         if(!stateData) return;
 
