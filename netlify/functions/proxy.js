@@ -2,25 +2,31 @@ exports.handler = async function(event, context) {
     if (event.httpMethod !== "POST") return { statusCode: 405, body: "Chỉ nhận POST" };
 
     try {
-        // Nhận yêu cầu từ giao diện web
-        const { targetUrl, method, headers, payload } = JSON.parse(event.body);
+        const parsed = JSON.parse(event.body || '{}');
+        const { targetUrl, method, headers, payload } = parsed;
 
         const fetchOptions = {
             method: method || "GET",
             headers: headers || {}
         };
-        
-        if (payload && method === "POST") {
-            fetchOptions.body = JSON.stringify(payload);
+
+        if (method === "POST") {
+            fetchOptions.body = JSON.stringify(payload ?? {});
+            if (!fetchOptions.headers["content-type"] && !fetchOptions.headers["Content-Type"]) {
+                fetchOptions.headers["content-type"] = "application/json";
+            }
         }
 
-        // Netlify thay mặt bạn gửi request đến trang HH3D
         const response = await fetch(targetUrl, fetchOptions);
         const textData = await response.text();
 
         return {
             statusCode: 200,
-            body: JSON.stringify({ success: true, text: textData })
+            body: JSON.stringify({
+                success: response.ok,
+                status: response.status,
+                text: textData
+            })
         };
 
     } catch (error) {
